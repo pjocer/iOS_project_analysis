@@ -10,6 +10,7 @@ import threading
 import glob
 import argparse
 import logging
+import fnmatch
 
 try:
     # 尝试导入模块
@@ -35,9 +36,9 @@ except ImportError:
 
 input_path = None
 output_path = None
-exclude_paths = None
+additional_exclude_file_folder = None
 additional_resource_folders = None
-apply_gitignore_filter = None
+disable_gitignore = None
 apply_filtered_files = None
 analyze_resources = None
 
@@ -70,9 +71,15 @@ def filter_files_by_type(all_files, filter_file_types):
     print(get_colored__description_and_object("过滤完成💩"))
     return filtered_files
 
+def find_gitignore():
+    for root, dirs, files in os.walk(input_path):
+        if '.gitignore' in files:
+            return os.path.join(root, '.gitignore')
+    return None
+
 def filter_files_by_gitignore(all_files):
     print(get_colored__description_and_object("正在应用.gitignore规则过滤文件..."))
-    gitignore_file = os.path.join(input_path, ".gitignore")
+    gitignore_file = find_gitignore()
     ignored_patterns = []
     if os.path.exists(gitignore_file):
         print("检索到.gitignore文件:", gitignore_file)
@@ -299,83 +306,147 @@ def fetch_unused_resources(all_files, resources):
     print(get_colored__description_and_object("检索完成💩，未使用的资源数量:", count_unuse))
     print(get_colored__description_and_object("已保存未使用的资源至:", result_path))
 
+def filter_additional_exclude_files(all_files):
+    print(get_colored__description_and_object(f"正在应用扩展规则{additional_exclude_file_folder}过滤"))
+    assert isinstance(all_files, list), "all_files should be a list of file paths"
+    assert isinstance(additional_exclude_file_folder, list), "additional_exclude_file_folder should be a list of patterns"
+    filtered_paths = []
+    with tqdm(total=len(all_files), desc=f"应用扩展规则过滤{additional_exclude_file_folder}", unit="file", leave=False, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
+        pbar.set_description(get_colored__description_and_object(f"正在应用扩展规则{additional_exclude_file_folder}过滤"))
+        for file_path in all_files:
+            for pattern in additional_exclude_file_folder:
+                if not fnmatch.fnmatchcase(file_path, pattern):
+                    filtered_paths.append(file_path)
+                else:
+                    name = os.path.basename(file_path)
+                    RED = "\033[91m"
+                    BLUE = "\033[94m"
+                    RESET = "\033[0m"
+                    pbar.write(f"已过滤文件：{BLUE}{name}{RESET}({RED}{file_path}{RESET})")
+
+                pbar.update(1)
+    print(get_colored__description_and_object(f"应用扩展规则过滤{additional_exclude_file_folder}文件完成💩"))
+    return filtered_paths
+
 def fetch_filtered_files():
     print(get_colored__description_and_object("检索文件夹:", input_path))
     all_files = [os.path.join(root, filename) for root, _, files in os.walk(input_path) for filename in files]
     print(get_colored__description_and_object("检索文件数:", len(all_files)))
     filtered_files = all_files
-    if apply_gitignore_filter:
+    if not disable_gitignore:
         filtered_files = filter_files_by_gitignore(all_files)
     print(get_colored__description_and_object("应用gitignore规则过滤后的文件数量:", len(filtered_files)))
+    if additional_exclude_file_folder:
+        filtered_files = filter_additional_exclude_files(filtered_files)
+        print(get_colored__description_and_object("应用扩展规则过滤后的文件数量:", len(filtered_files)))
     return filtered_files
 
 def create_arg_parser():
-    parser = argparse.ArgumentParser(description="Utility script: analyze project files, filter dev files using gitignore, and detect unused classes. Identify and categorize resources, highlighting unused ones. Save results for efficient project management.")
+    parser = argparse.ArgumentParser(
+        description="This script serves as a static analysis tool for iOS projects, designed to perform two main functions:\n"
+                    "1. Analysis of developer-created files: It identifies and filters out Objective-C classes and Swift classes/structs created by developers. Further refinement distinguishes which classes or structs are unused and can be safely removed.\n"
+                    "2. Analysis of resource files: The script examines 'Assets.xcassets' and other custom directories (refer to the '--additional_resource_folders' option) within the project. It categorizes resource files based on their types and refines the list to identify files that can be safely cleaned—those not referenced in filtered developer files.\n\n"
+                    "Usage Example:\n"
+                    "   ```python your_script.py -p /path/to/your/project -o /output/folder -r -arp CustomResources```\n"
+                    "   Analyzes the specified iOS project, outputs results to the designated folder, performs resource analysis, and includes the 'CustomResources' directory for additional resource detection."
+    )
 
     # 是否使用缓存文件代替全量文件过滤，默认为False
     parser.add_argument(
-        "-t", 
-        "--apply_filtered_files", 
-        action="store_true", 
-        help="Use cached 'filtered_files.json' instead of fetching files. Default is False.(e.g. -t or not)"
+        "-t",
+        "--apply_filtered_files",
+        action="store_true",
+        help="Enable the use of cached files instead of full file filtering. By default, full filtering based on Gitignore rules and additional exclusions is applied. When this option is activated, it disregards the '--additional_exclude_file_folder' and '--disable_gitignore' options, directly retrieving the file list from the specified '--output_path'.\n\n"
+            "This option is useful when you have a pre-defined file list and want to bypass Gitignore rules for a specific operation, improving efficiency.\n\n"
+            "Usage Example:\n"
+            "   ```python3 project_static_analysis.py -t --output_path cached_file_list.txt```\n"
+            "   Activates the use of cached files specified in 'cached_file_list.txt', ignoring Gitignore rules and additional exclusions.\n\n"
+            "Note: Ensure the provided file list is accurate and relevant to the operation you are performing."
     )
 
     # 是否分析资源文件并提取出未使用的资源文件，默认为False
     parser.add_argument(
-        "-r", 
-        "--analyze_resources", 
-        action="store_true", 
-        help="Analyze resources and extract unused resources. Default is False.(e.g. -r or not)"
+        "-r",
+        "--analyze_resources",
+        action="store_true",
+        help="Enable resource file analysis to identify and extract unused resources. By default, this analysis is disabled.\n\n"
+            "Example:\n"
+            "   ```python3 project_static_analysis.py -r```\n"
+            "   Enables resource analysis to identify and extract unused resources in the project. Use this option to optimize your application's resource usage."
+    )
+    
+    # 是否禁用gitignore规则进行文件过滤，默认为开启
+    parser.add_argument(
+        "-dg",
+        "--disable_gitignore",
+        action="store_true",
+        help="Whether to disable .gitignore rules for file filtering. By default, .gitignore rules are enabled."
     )
 
-    # 是否应用gitignore规则进行文件过滤，默认为True
+    # 默认只应用gitignore规则过滤工程中创建的开发者文件，可通过此参数添加额外的过滤文件夹或文件
     parser.add_argument(
-        "-gi", 
-        "--apply_gitignore_filter", 
-        action="store_true", 
-        default=True, 
-        help="Apply gitignore rules for filtering files during script execution. Default is True.(e.g. -gi or not)"
+        "-afp", 
+        "--additional_exclude_file_folder", 
+        nargs='+', 
+        help="Exclude extra folders or files from version control, supplementing Gitignore rules. By default, the command filters developer-created files. Use this option to add more exclusions, supporting wildcards.\n\n"
+         "Examples:\n"
+         "1. Exclude a folder:\n"
+         "   ```python3 project_static_analysis.py -afp folder_to_exclude```\n"
+         "2. Exclude files with wildcards:\n"
+         "   ```python3 project_static_analysis.py -afp folder/*.log```\n"
+         "3. Exclude multiple items:\n"
+         "   ```python3 project_static_analysis.py -afp folder1 folder2 file_to_exclude.txt```\n"
+         "Ensure paths are relative to the project root. Added items follow Gitignore-like rules, refining version control for specific project needs."
     )
 
     # 外部输入分析路径，默认为当前脚本文件夹
     parser.add_argument(
-        "-p", 
-        "--input_path", 
-        default=os.path.dirname(os.path.abspath(__file__)), 
-        help="Specify the input path. Default is the current script folder.(e.g. -p={your_project_root_path})"
+        "-p",
+        "--input_path",
+        default=os.path.dirname(os.path.abspath(__file__)),
+        help="Specify the input analysis path from external sources. By default, it is set to the current directory of the script.\n\n"
+            "Example:\n"
+            "   ```python3 project_static_analysis.py -p /path/to/your/project```\n"
+            "   Sets the input path to '/path/to/your/project', allowing analysis of resources or files within that specified directory."
     )
 
     # 过滤后的文件输出地址，默认为当前脚本文件夹
     parser.add_argument(
         "-o",
-        "--output_path", 
-        default=os.path.dirname(os.path.abspath(__file__)), 
-        help="Specify the output path. Default is the current script folder.(e.g. -o={your_project_root_path})"
+        "--output_path",
+        default=os.path.dirname(os.path.abspath(__file__)),
+        help="Specify the output path for filtered files from external input. By default, it is set to the current directory of the script.\n\n"
+            "Example:\n"
+            "   ```python3 project_static_analysis.py -o /path/to/output/folder```\n"
+            "   Sets the output path to '/path/to/output/folder', where the filtered files will be stored. Use this option to control the destination of the analysis results."
     )
-
-    # 默认只检测Assets.xcassets中的资源，通过该指令接受额外的一个或多个文件夹
+    # 默认只检测Assets.xcassets中的资源，通过该指令接收额外的一个或多个文件夹
     parser.add_argument(
-        "-arp", 
-        "--additional_resource_folders", 
-        nargs='+', 
-        help="Specify additional folder to search for resources. By default, only resources within 'Assets.xcassets' are checked. This option allows you to include one or more custom folder for resource detection.(e.g. -arp=Folder1,Folder2... or -arp Folder1 Folder2 ...)"
+        "-arp",
+        "--additional_resource_folders",
+        nargs='+',
+        help="Specify additional folders for resource detection, supplementing the default search limited to 'Assets.xcassets'. This option allows you to include one or more extra folders, supporting the use of wildcards.\n\n"
+            "Usage Example:\n"
+            "   ```python3 project_static_analysis.py -arp Resources CustomAssets/*```\n"
+            "   Adds 'Resources' and all subdirectories matching the 'CustomAssets' pattern to the resource detection process. Use this option to broaden the scope of resource analysis beyond the default 'Assets.xcassets'."
     )
 
     return parser
 
-def inititalizeGlobalVariable(args):
-    global input_path, output_path, apply_gitignore_filter, apply_filtered_files, analyze_resources, additional_resource_folders
+def inititalize_global_variable(args):
+    global input_path, output_path, disable_gitignore, apply_filtered_files, analyze_resources, additional_resource_folders, additional_exclude_file_folder
     input_path = args.input_path
     output_path = args.output_path
     apply_filtered_files = args.apply_filtered_files
-    apply_gitignore_filter = args.apply_gitignore_filter
+    disable_gitignore = args.disable_gitignore
     analyze_resources = args.analyze_resources
-    additional_resource_folders = args.additional_resource_folders if args.additional_resource_folders else []
+    additional_resource_folders = args.additional_resource_folders
+    additional_exclude_file_folder = args.additional_exclude_file_folder
 
 if __name__ == "__main__":
     arg_parser = create_arg_parser()
     args = arg_parser.parse_args()
-    inititalizeGlobalVariable(args)
+    inititalize_global_variable(args)
     # 切换工作目录
     try:
         os.chdir(input_path)
