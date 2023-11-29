@@ -11,6 +11,7 @@ import glob
 import argparse
 import logging
 import fnmatch
+import shutil
 
 try:
     # 尝试导入模块
@@ -433,10 +434,19 @@ def create_arg_parser():
 
     return parser
 
+def recreate_output_directory():
+    # 删除目录及其内容
+    if os.path.exists(output_path):
+        shutil.rmtree(output_path)
+
+    # 创建新目录
+    os.makedirs(output_path)
+
 def inititalize_global_variable(args):
     global input_path, output_path, disable_gitignore, apply_filtered_files, analyze_resources, additional_resource_folders, additional_exclude_file_folder
     input_path = args.input_path
     output_path = args.output_path
+    recreate_output_directory()
     apply_filtered_files = args.apply_filtered_files
     disable_gitignore = args.disable_gitignore
     analyze_resources = args.analyze_resources
