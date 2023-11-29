@@ -66,3 +66,7 @@
 	]
 	```
   > 支持检测工程中未被使用到的资源列表，可通过`-r`指令开启。详见脚本说明(`python3 project_static_analysis -h`)
+
+# Usage
+
+` python3 project_static_analysis.py -p {your_project_full_path} -o {output_full_path} -afp '*/Zombie/Helper/*.*' -r -arp=Resource`
