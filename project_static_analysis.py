@@ -14,24 +14,16 @@ import fnmatch
 import shutil
 
 try:
-    # 尝试导入模块
     from gitignore_parser import parse_gitignore
     from tqdm import tqdm
 except ImportError:
-    # 如果导入失败，说明模块未安装
     print("正在安装依赖...")
-    
     try:
-        # 使用pip安装模块
-        import subprocess
         subprocess.check_call(['/usr/bin/python3', '-m', 'pip', 'install', 'gitignore_parser', 'tqdm'])
-        
-        # 安装成功后导入模块
         from gitignore_parser import parse_gitignore
         from tqdm import tqdm
         print("安装成功！")
     except Exception as e:
-        # 安装失败，输出错误信息
         print(f"安装失败: {e}")
         exit(1)
 
@@ -344,6 +336,40 @@ def fetch_unused_resources(all_files, resources):
 
     print(get_colored__description_and_object("检索完成💩，未使用的资源数量:", count_unuse))
     print(get_colored__description_and_object("已保存未使用的资源至:", result_path))
+    return unused_resources
+
+def clear_unused_resources(unused_resources, resources):
+    def delete_imageset_or_file(file_path):
+        nonlocal total_size_bytes
+        try:
+            size_bytes = os.path.getsize(file_path)
+            total_size_bytes += size_bytes
+        except FileNotFoundError:
+            print(f"File not found: {file_path}")
+        except Exception as e:
+            print(f"Error processing file {file_path}: {e}")
+        
+        parent_dir = os.path.dirname(file_path)
+        if parent_dir.endswith('.imageset'):
+            shutil.rmtree(parent_dir)
+        else:
+            os.remove(file_path)
+
+    imageset_obj = resources["imagesets"]
+    other_objs = resources["others"]
+    unused_dict = {key: imageset_obj[key] for key in unused_resources if key in imageset_obj}
+    unused_dict.update({key: format_dict[key] for key in unused_resources for format_dict in other_objs.values() if key in format_dict})
+    total_size_bytes = 0
+    with tqdm(total=len(unused_dict), desc="正在清理资源文件", unit="file", leave=False, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
+        RED = "\033[91m"
+        BLUE = "\033[94m"
+        RESET = "\033[0m"
+        for name, file_path in unused_dict.items():
+            delete_imageset_or_file(file_path)
+            pbar.write(f"已清理资源：{BLUE}{name}{RESET}({RED}{file_path}{RESET})")
+            pbar.update(1)
+    total_size_mb = round(total_size_bytes / (1024 * 1024), 2)
+    print(f"清理资源完成💩，共清理文件{RED}{len(unused_dict)}{RESET}个，总计大小{RED}{total_size_mb}MB{RESET}")
 
 def filter_additional_exclude_files(all_files):
     print(get_colored__description_and_object(f"正在应用扩展规则{additional_exclude_file_folder}过滤"))
@@ -503,7 +529,6 @@ if __name__ == "__main__":
     arg_parser = create_arg_parser()
     args = arg_parser.parse_args()
     inititalize_global_variable(args)
-    # 切换工作目录
     try:
         os.chdir(input_path)
         print(f"Changed working directory to: {input_path}")
@@ -517,7 +542,12 @@ if __name__ == "__main__":
 
         if analyze_resources:
             resources = apply_resources()
-            fetch_unused_resources(filtered_files, resources)
+            if apply_filtered_files:
+                with open(os.path.join(output_path, "unused_assets.json"), "r") as filtered_files_file:
+                    unused_resources = json.load(filtered_files_file)
+            else:
+                unused_resources = fetch_unused_resources(filtered_files, resources)
+            clear_unused_resources(unused_resources, resources)
     except FileNotFoundError:
         print(f"The specified directory does not exist: {input_path}")
     except PermissionError:
