@@ -175,14 +175,14 @@ def apply_resources():
                 imageset_name = imageset_name[:-9]
             return imageset_name
 
-        imagesets = []
-        imageset_files = glob.glob(os.path.join(input_path, "**/*.imageset/**/*.*"), recursive=True)
+        result = {}
         for imageset_file in imageset_files:
             imageset_name = extract_imageset_name(imageset_file)
-            imagesets.append(imageset_name)
-            pbar.write(f"已检索到文件：{BLUE}{imageset_name}{RESET}")
+            result[imageset_name] = imageset_file
+            pbar.write(f"已检索到资源文件：{BLUE}{imageset_name}{RESET}")
             pbar.update(1)
-        return list(set(imagesets))
+
+        return result
 
     # 在 input_path 下检索 additional_resource_folders 中所有文件夹内的资源文件
     def apply_addtional_resouces(additional_resource_files, pbar):
@@ -216,13 +216,9 @@ def apply_resources():
             full_name = os.path.basename(resource_file)
             name, format = full_name.rsplit(".", 1)
             name = remove_duplicate_suffix(name)
-            if format in result:
-                result[format].append(name)
-            else:
-                result[format] = [name]
-
-        for format, names_list in result.items():
-            result[format] = list(set(names_list))
+            if format not in result:
+                result[format] = {}
+            result[format][name] = resource_file
         pbar.update(1)
         return result
         
@@ -252,11 +248,6 @@ def apply_resources():
     resources_path = os.path.join(output_path, "filtered_resources.json")
     with open(resources_path, "w") as resources_file:
         json.dump(resources, resources_file, indent=4)
-    print("是否要输出检索到的资源文件信息:(y/n)", end='', flush=True)
-    user_input = getch()
-    if user_input.lower() == "y":
-        formatted_json = json.dumps(resources, indent=4)
-        print(get_colored__description_and_object("检索到的资源文件信息:", formatted_json))
     print(get_colored__description_and_object("已保存检索到的资源文件至:", resources_path))
     return resources
 
@@ -264,11 +255,6 @@ def apply_dev_files(all_files):
     filter_file_types = [".h", ".m", ".swift", ".xib", ".nib", ".storyboard"]
     filtered_files = filter_files_by_type(all_files, filter_file_types)
     print(get_colored__description_and_object("过滤指定文件类型后的文件数量:",  len(filtered_files)))
-    print("是否要输出过滤后的文件信息:(y/n)", end='', flush=True)
-    user_input = getch()
-    if user_input.lower() == "y":
-        formatted_json = json.dumps(filtered_files, indent=4)
-        print(get_colored__description_and_object("过滤后的文件信息:",  formatted_json))
     output_directory = os.path.join(output_path, "filtered_files.json")
     with open(output_directory, "w") as json_file:
         json.dump(filtered_files, json_file, indent=4)
@@ -280,11 +266,6 @@ def apply_dev_files(all_files):
     with open(filtered_classes_path, "w") as classes_file:
         json.dump(classes_json, classes_file, indent=4)
     
-    print("是否要输出提取的类信息:(y/n)", end='', flush=True)
-    user_input = getch()
-    if user_input.lower() == "y":
-        formatted_json = json.dumps(classes_json, indent=4)
-        print(get_colored__description_and_object("检索到的类信息:",  formatted_json))
     print(get_colored__description_and_object("已保存提取的类至:",  filtered_classes_path))
     return filtered_files
 
@@ -296,9 +277,11 @@ def check_resource_usage(resource, all_files, pbar, count_unuse, lock):
         return match is not None
 
     def is_content_matching_resource(resource, file_content):
-        splited_string_arr = re.compile(r'(\D+|\d+)').findall(resource)
-        filtered_array = [s for s in splited_string_arr if not s.isdigit()]
-        return all(s in content for s in filtered_array)
+        splited_string_arr = re.compile(r'([^_?-?\d]+)').findall(resource)
+        if splited_string_arr:
+            return all(s in file_content for s in splited_string_arr)
+        else:
+            return resource in file_content
 
     RED = "\033[91m"
     BLUE = "\033[94m"
@@ -309,8 +292,13 @@ def check_resource_usage(resource, all_files, pbar, count_unuse, lock):
         with open(file_path, "r", encoding="utf-8") as file:
             content = file.read()
             if content:
-                t = f"\"{resource}\""
-                if t in content:
+                try:
+                    value = int(resource)
+                    is_full_digit = True
+                except ValueError:
+                    is_full_digit = False
+
+                if resource in content:
                     resource_used = True
                     break
                 elif contains_digit(resource) and is_content_matching_resource(resource, content):
@@ -328,39 +316,32 @@ def check_resource_usage(resource, all_files, pbar, count_unuse, lock):
 def fetch_unused_resources(all_files, resources):
     print(get_colored__description_and_object("正在检索项目中未使用到的资源文件..."))
     all_resources = []
-    for imageset in resources.get("imagesets", []):
-        all_resources.append(imageset)
-    for _, names in resources.get("others", {}).items():
-        all_resources.extend(names)
-
-    unused_resources = set(all_resources)
-    total = len(unused_resources)
+    imageset_keys = set(resources.get("imagesets", {}).keys())
+    all_resources.extend(imageset_keys)
+    for item in resources.get("others", {}).values():
+        all_resources.extend(set(item.keys()))
+    total = len(all_resources)
     lock = threading.Lock()
-    resources_to_remove = set()
+    used_resources = []
     count_unuse = [0]
     bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
     with concurrent.futures.ThreadPoolExecutor() as executor, \
             tqdm(total=total, desc="检索未使用的资源", unit="file", leave=False, bar_format=bar_format) as pbar:
-        futures = [executor.submit(check_resource_usage, resource, all_files, pbar, count_unuse, lock) for resource in unused_resources]
+        futures = [executor.submit(check_resource_usage, resource, all_files, pbar, count_unuse, lock) for resource in all_resources]
         for future in concurrent.futures.as_completed(futures):
             with lock:
                 r = future.result()
-                if r:
-                    resources_to_remove.add(r)
+                if r and r not in used_resources:
+                    used_resources.append(r)
                 pbar.update(1)
 
     executor.shutdown(wait=True)
-    unused_resources -= resources_to_remove
-    unused_resources = list(unused_resources)
+    unused_resources = list(set(all_resources).difference(set(used_resources)))
     result_path = os.path.join(output_path, "unused_assets.json")
+    
     with open(result_path, 'w') as result_file:
         json.dump(unused_resources, result_file, indent=4)
 
-    print("是否要输出未使用的资源信息:(y/n)", end='', flush=True)
-    user_input = getch()
-    if user_input.lower() == "y":
-        unused_resources_json = json.dumps(unused_resources, indent=4)
-        print(get_colored__description_and_object("检索到的未使用的资源信息:", unused_resources_json))
     print(get_colored__description_and_object("检索完成💩，未使用的资源数量:", count_unuse))
     print(get_colored__description_and_object("已保存未使用的资源至:", result_path))
 
@@ -517,7 +498,6 @@ def inititalize_global_variable(args):
     additional_resource_folders = args.additional_resource_folders
     additional_exclude_file_folder = args.additional_exclude_file_folder
     exclude_resource_folders = args.exclude_resource_folders
-    # recreate_output_directory()
 
 if __name__ == "__main__":
     arg_parser = create_arg_parser()
