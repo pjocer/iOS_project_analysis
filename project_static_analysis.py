@@ -541,11 +541,13 @@ if __name__ == "__main__":
             filtered_files = apply_dev_files(filtered_files)
 
         if analyze_resources:
-            resources = apply_resources()
             if apply_filtered_files:
+                with open(os.path.join(output_path, "filtered_resources.json"), "r") as filtered_resources_file:
+                    resources = json.load(filtered_resources_file)
                 with open(os.path.join(output_path, "unused_assets.json"), "r") as filtered_files_file:
                     unused_resources = json.load(filtered_files_file)
             else:
+                resources = apply_resources()
                 unused_resources = fetch_unused_resources(filtered_files, resources)
             clear_unused_resources(unused_resources, resources)
     except FileNotFoundError:
